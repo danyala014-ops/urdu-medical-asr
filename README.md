@@ -75,13 +75,25 @@ Live sessions are saved under `transcripts/` (audio + text per sentence; not tra
 `train_omni_kaggle.py` re-creates the fine-tuned model on a free Kaggle GPU:
 
 1. Kaggle notebook settings: **Accelerator = GPU T4**, **Internet = On**.
-2. Paste the whole file into one cell and press **Run All** (about 30–40 minutes).
+2. Paste the whole file into one cell and press **Run All** (about 2.5 hours).
 3. Download `omni-urdu-ft.zip` from the link printed at the end.
 
-It downloads only a small subset of [UrduSpeech](https://huggingface.co/datasets/ASLP-lab/UrduSpeech)
-(2,000 short clips: 50% standard Urdu, 40% Urdu–English code-switched, 10% Pakistani English),
-fine-tunes the model, and exports `model.int8.onnx` + `tokens.txt` in exactly the format
-`asr_engine.py` loads. Settings are at the top of the file.
+It uses three kinds of training data:
+
+- **Real speech:** 8,000 clips from [UrduSpeech](https://huggingface.co/datasets/ASLP-lab/UrduSpeech)
+  (50% standard Urdu, 40% Urdu–English code-switched, 10% Pakistani English), with the ~1,500
+  health-related clips taken first. Only these clips are downloaded, never the whole corpus.
+- **Synthetic medical speech:** 2,500 doctor–patient sentences from `medical_sentences.py`, voiced
+  with Meta's MMS Urdu text-to-speech. The voice reads English terms written in Urdu script (so it
+  says *diabetes* the way Pakistani doctors do) while the training label keeps them in English
+  letters, so the model itself learns to write `diabetes`, `palpitations`, `angiography`, …
+- **Augmentation:** random speed (0.9–1.1×) and background noise on the training audio.
+
+It reports the error rates before and after training on hand-corrected real speech and on 150
+unseen medical sentences (including the share of medical terms written exactly right), then
+exports `model.int8.onnx` + `tokens.txt` in exactly the format `asr_engine.py` loads. Settings
+are at the top of the file. The Kaggle notebook fetches `medical_sentences.py` from this
+repository, so push changes to it before training.
 
 ## Project structure
 
@@ -91,6 +103,7 @@ fine-tunes the model, and exports `model.int8.onnx` + `tokens.txt` in exactly th
 | `live_transcribe.py` | Live microphone transcription with voice-activity detection |
 | `benchmark.py` | Scores models on a test folder (WER, CER, Urdu CER, English words kept, speed) |
 | `train_omni_kaggle.py` | Fine-tunes Omnilingual 300M on Kaggle and exports the int8 ONNX model |
+| `medical_sentences.py` | Generates synthetic doctor–patient sentences (Urdu + English medical terms) for training |
 | `devanagari_to_urdu.py` | Re-spells Hindi-script output into Urdu script (used by `omni-urdu`) |
 | `english_terms.py` + `vocab/english_terms.txt` | Medical English terms written in Urdu script → English letters |
 | `clinical_extraction.py` | Rules that pull symptoms, diagnoses, medicines and tests out of a transcript and store them in SQLite |
@@ -105,6 +118,7 @@ fine-tunes the model, and exports `model.int8.onnx` + `tokens.txt` in exactly th
   (weights via the Hugging Face port `ilhanemirhan/omniASR_CTC_300M`).
 - Training and code-switched test data: UrduSpeech, CC-BY-4.0 (Haq et al., 2026, arXiv:2605.17846).
 - Pure-Urdu test data: Google FLEURS, CC-BY-4.0.
+- Synthetic training speech: Meta MMS Urdu TTS (`facebook/mms-tts-urd-script_arabic`), CC-BY-NC-4.0.
 - No patient or hospital audio is used anywhere in this project.
 
 The fine-tuned model is a derivative of the Apache-2.0 base model trained on CC-BY-4.0 data: when
