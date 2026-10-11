@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+.venv*/
+venv/
+
+# Large model files (GitHub limit is 100 MB per file) -- download from the Releases page instead
+models/
+*.onnx
+
+# Personal voice recordings made with live_transcribe.py (never publish)
+transcripts/
+recordings/
+
+# Generated outputs
+results/
+*.db
+*.db-shm
+*.db-wal
+lm/
+
+# Secrets and editor files
+.env
+.vscode/
+.idea/
+*.log

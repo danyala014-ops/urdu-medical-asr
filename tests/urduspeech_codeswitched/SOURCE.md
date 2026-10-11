@@ -1,0 +1,1 @@
+30 short code-switched clips from the hand-corrected UrduSpeech benchmark (ASLP-lab/UrduSpeech, benchmark/US-benchmark-CS/short, `ground_truth` field). None were used for training, and the 50 code-switched validation clips of train_omni_kaggle.py are excluded. General speech (vlogs, dramas, interviews), not medical.

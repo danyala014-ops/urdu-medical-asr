@@ -1,0 +1,28 @@
+# Dependencies for live_transcribe.py (and asr_engine.py, microphones.py, english_terms.py).
+# Install (two steps -- see pyctcdecode note at the bottom):
+#   pip install -r requirements.txt
+#   pip install --no-deps pyctcdecode==0.5.0
+# Versions are the ones this project was tested with (Python 3.12 Linux Mint and 3.14 Windows, CPU only).
+
+# CPU-only PyTorch build (much smaller than the default CUDA build)
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# --- core (always needed) ---
+torch==2.14.0
+transformers==5.17.0
+huggingface_hub==1.33.0
+numpy==2.5.3
+librosa==1.0.0
+soundfile==0.14.0
+sounddevice==0.5.6
+silero-vad==6.2.3
+
+# --- per model ---
+onnxruntime==1.30.0       # omni-ft (our fine-tune), omni, omni-urdu, omni-1b, omni-1b-urdu
+sherpa-onnx==1.13.8       # parakeet, dolphin-*, whisper-*-urdu (int8 ONNX)
+
+# pyctcdecode (medasr with the cardiology LM, lm/cath_lm.pkl.gz) declares numpy<2 but works
+# fine with numpy 2, so it is installed separately with --no-deps (command at the top).
+pygtrie==2.6.2            # pyctcdecode's only runtime dependency
+
+jiwer                     # benchmark.py (WER/CER)

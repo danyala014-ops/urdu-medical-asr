@@ -1,0 +1,93 @@
+# English medical terms to write in English letters inside Urdu transcripts.
+#
+# Format:   English term = Urdu spelling, another Urdu spelling, ...
+#
+# The model writes English words by sound in Urdu script ("blockage" -> پلاکج). A transcript
+# word (or 2-3 word phrase) is replaced when it matches one of the Urdu spellings here, allowing
+# one letter difference for longer words and treating often-confused letters as the same
+# (ب/پ, ت/ٹ/ط, س/ص/ث, ز/ذ/ض/ظ/ج, ک/ق, ہ/ح; ھ ignored).
+# When a transcript shows a new spelling of a term, just add it to that term's line.
+#
+# Deliberately NOT listed: words fully naturalised in Urdu (ڈاکٹر, ٹیسٹ, رپورٹ, ہسپتال, دوائی).
+
+# --- cardiology ---
+blockage = بلاکیج, بلاکج
+stent = سٹنٹ, اسٹنٹ, سٹینٹ
+angiography = انجیوگرافی, اینجیوگرافی
+angiogram = انجیوگرام, اینجیوگرام
+angioplasty = انجیوپلاسٹی, اینجیوپلاسٹی
+catheter = کیتھیٹر, کیتھٹر
+bypass = بائی پاس, بائیپاس
+heart attack = ہارٹ اٹیک, ہارٹ اٹیکٹ
+cardiac = کارڈیک, کارڈیئک
+artery = آرٹری, آرٹیری
+arteries = آرٹریز, آرٹیریز
+valve = والو, ویلو
+pacemaker = پیس میکر, پیسمیکر
+echo = ایکو
+echocardiography = ایکوکارڈیوگرافی
+cholesterol = کولیسٹرول, کولسٹرول
+troponin = ٹروپونن, ٹروپونین
+aspirin = اسپرین, ایسپرین
+heparin = ہیپرین, ہیپارین
+
+# --- general clinical ---
+blood pressure = بلڈ پریشر
+sugar = شوگر
+diabetes = ذیابیطس, ڈائبیٹیز
+insulin = انسولین
+infection = انفیکشن
+antibiotic = اینٹی بائیوٹک, اینٹی بایوٹک
+injection = انجیکشن
+tablet = ٹیبلٹ, ٹیبلیٹ
+capsule = کیپسول
+syrup = سیرپ, شربت
+drip = ڈرپ
+oxygen = آکسیجن
+ventilator = وینٹیلیٹر
+ultrasound = الٹراساؤنڈ, الٹرا ساؤنڈ
+x-ray = ایکسرے, ایکس رے
+scan = سکین, اسکین
+CT scan = سی ٹی سکین, سی ٹی اسکین
+operation = آپریشن
+surgery = سرجری
+emergency = ایمرجنسی
+allergy = الرجی
+fracture = فریکچر
+dialysis = ڈائیلاسز, ڈائلیسس
+kidney = کڈنی
+liver = لیور
+thyroid = تھائیرائیڈ, تھائرائڈ
+cancer = کینسر
+biopsy = بائیوپسی, بایوپسی
+chemotherapy = کیموتھراپی
+hepatitis B = ہیپاٹائٹس بی, ہائی پٹائٹز بی, ہیپاٹائٹز بی
+hepatitis C = ہیپاٹائٹس سی, ہائی پٹائٹز سی, ہیپاٹائٹز سی
+hepatitis = ہیپاٹائٹس, ہائی پٹائٹز, ہیپاٹائٹز
+pneumonia = نمونیا
+migraine = مائگرین, میگرین
+dengue = ڈینگی
+malaria = ملیریا
+typhoid = ٹائیفائیڈ, ٹائیفائڈ
+
+# --- acronyms, as the letters are spoken ---
+ECG = ای سی جی
+EKG = ای کے جی
+BP = بی پی
+CT = سی ٹی
+MRI = ایم آر آئی
+ICU = آئی سی یو
+CCU = سی سی یو
+OPD = او پی ڈی
+PCI = پی سی آئی
+CABG = کیبج, سی اے بی جی
+LAD = ایل اے ڈی
+RCA = آر سی اے
+TB = ٹی بی
+HIV = ایچ آئی وی
+CBC = سی بی سی
+ESR = ای ایس آر
+CRP = سی آر پی
+INR = آئی این آر
+EF = ای ایف
+IV = آئی وی
