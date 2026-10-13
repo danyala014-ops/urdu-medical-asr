@@ -72,28 +72,34 @@ Live sessions are saved under `transcripts/` (audio + text per sentence; not tra
 
 ## Training
 
-`train_omni_kaggle.py` re-creates the fine-tuned model on a free Kaggle GPU:
+`train_omni_kaggle.py` trains the model on a free Kaggle GPU:
 
 1. Kaggle notebook settings: **Accelerator = GPU T4**, **Internet = On**.
-2. Paste the whole file into one cell and press **Run All** (about 2.5 hours).
-3. Download `omni-urdu-ft.zip` from the link printed at the end.
+2. **Add Input** → search *Medical Speech, Transcription, and Intent* (paultimothymooney) → Add.
+   To continue from an earlier run, also add that notebook's output (it contains `omni-urdu-ft-hf/`).
+   Optional: **Add-ons → Secrets → `HF_TOKEN`** avoids Hugging Face download rate limits.
+3. Paste the whole file into one cell and click **Save Version → Save & Run All** (about 4 hours).
+4. Download `omni-urdu-ft.zip` from the link printed at the end.
 
-It uses three kinds of training data:
+Training data:
 
-- **Real speech:** 8,000 clips from [UrduSpeech](https://huggingface.co/datasets/ASLP-lab/UrduSpeech)
-  (50% standard Urdu, 40% Urdu–English code-switched, 10% Pakistani English), with the ~1,500
-  health-related clips taken first. Only these clips are downloaded, never the whole corpus.
-- **Synthetic medical speech:** 2,500 doctor–patient sentences from `medical_sentences.py`, voiced
-  with Meta's MMS Urdu text-to-speech. The voice reads English terms written in Urdu script (so it
-  says *diabetes* the way Pakistani doctors do) while the training label keeps them in English
-  letters, so the model itself learns to write `diabetes`, `palpitations`, `angiography`, …
-- **Augmentation:** random speed (0.9–1.1×) and background noise on the training audio.
+- **Real Urdu/English speech:** 8,000 clips from [UrduSpeech](https://huggingface.co/datasets/ASLP-lab/UrduSpeech)
+  (50% standard Urdu, 40% Urdu–English code-switched, 10% Pakistani English), health-related
+  clips first. Only these clips are downloaded, never the whole corpus.
+- **Synthetic medical speech:** 6,500 doctor–patient sentences from `medical_sentences.py`
+  (264 English medical terms), voiced with Meta's MMS Urdu and English text-to-speech. The Urdu
+  voice reads English terms written in Urdu script (so it says *diabetes* the way Pakistani
+  doctors do) while the label keeps them in English letters, so the model itself learns to
+  write `diabetes`, `palpitations`, `angiography`, …
+- **Real English medical speech:** 2,000 clips of many people describing symptoms
+  (Kaggle *Medical Speech, Transcription, and Intent*, Figure Eight).
+- **Augmentation:** random speed (0.9–1.1×) and background noise.
 
-It reports the error rates before and after training on hand-corrected real speech and on 150
-unseen medical sentences (including the share of medical terms written exactly right), then
-exports `model.int8.onnx` + `tokens.txt` in exactly the format `asr_engine.py` loads. Settings
-are at the top of the file. The Kaggle notebook fetches `medical_sentences.py` from this
-repository, so push changes to it before training.
+The script reports before/after results on hand-corrected real speech, unseen synthetic medical
+sentences, 28 medical terms held out of training (to measure spelling of never-heard words) and
+real English medical speech. It exports `model.int8.onnx` + `tokens.txt` (what `asr_engine.py`
+loads) and the full-precision model `omni-urdu-ft-hf/`, from which the next round continues.
+The notebook fetches `medical_sentences.py` from this repository, so push changes to it first.
 
 ## Project structure
 
@@ -118,7 +124,10 @@ repository, so push changes to it before training.
   (weights via the Hugging Face port `ilhanemirhan/omniASR_CTC_300M`).
 - Training and code-switched test data: UrduSpeech, CC-BY-4.0 (Haq et al., 2026, arXiv:2605.17846).
 - Pure-Urdu test data: Google FLEURS, CC-BY-4.0.
-- Synthetic training speech: Meta MMS Urdu TTS (`facebook/mms-tts-urd-script_arabic`), CC-BY-NC-4.0.
+- Synthetic training speech: Meta MMS Urdu and English TTS (`facebook/mms-tts-urd-script_arabic`,
+  `facebook/mms-tts-eng`), CC-BY-NC-4.0, so models trained with it are for non-commercial use.
+- Real English medical speech: Kaggle *Medical Speech, Transcription, and Intent* (Figure Eight);
+  no explicit licence is given, so it is used for training only and not redistributed.
 - No patient or hospital audio is used anywhere in this project.
 
 The fine-tuned model is a derivative of the Apache-2.0 base model trained on CC-BY-4.0 data: when

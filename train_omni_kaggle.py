@@ -11,18 +11,25 @@ as the sherpa-onnx model asr_engine.py already runs (input "x", logits out, same
 Steps:
 1. Picks a random subset of UrduSpeech clips (code-switched, standard Urdu, Pakistani English;
    health-related clips first) and downloads only those clips -- never the full ~100 GB corpus
-2. Voices synthetic doctor-patient sentences (medical_sentences.py) with Meta's MMS Urdu TTS, so
-   the model hears medical terms (diabetes, palpitations, ...) labelled in English letters
-3. Loads omniASR_CTC_300M (Hugging Face Wav2Vec2ForCTC port; vocab identical to tokens.txt) and
-   checks it against the official int8 ONNX model on a few clips
-4. Fine-tunes it (full fine-tune, frozen conv front-end, speed/noise augmentation); validation =
-   manually-corrected benchmark, plus 150 unseen synthetic medical sentences
-5. Exports model.int8.onnx + tokens.txt to /kaggle/working/omni-urdu-ft  (download this folder)
+2. Voices synthetic doctor-patient sentences (medical_sentences.py, 264 English medical terms)
+   with Meta's MMS Urdu and English TTS voices, so the model hears medical terms (diabetes,
+   palpitations, ...) labelled in English letters
+3. Adds real English medical speech from many speakers ("Medical Speech, Transcription, and
+   Intent" Kaggle dataset), if it is attached as an input
+4. Loads omniASR_CTC_300M -- or continues from a previous fine-tune (omni-urdu-ft-hf) if one is
+   attached as an input -- and fine-tunes it (frozen conv front-end, speed/noise augmentation)
+5. Reports before/after on hand-corrected real speech, unseen synthetic medical sentences,
+   medical terms never seen in training, and real English medical speech
+6. Exports model.int8.onnx + tokens.txt to /kaggle/working/omni-urdu-ft, and the full model
+   (omni-urdu-ft-hf, ~1.3 GB) so the next round can continue training from it
 
 How to run on Kaggle (no commands or arguments needed):
     1. Settings (right panel): Accelerator = GPU T4, Internet = On
-    2. Paste this whole file into one notebook cell and press "Run All"
-    3. When it finishes, click the omni-urdu-ft.zip link under the output (or ask Claude to fetch
+    2. Add Input -> search "Medical Speech, Transcription, and Intent" (paultimothymooney) -> Add
+       Optional, next rounds: Add Input -> Your Work -> this notebook's output (omni-urdu-ft-hf)
+       Optional: Add-ons -> Secrets -> HF_TOKEN (avoids Hugging Face download rate limits)
+    3. Paste this whole file into one notebook cell, then Save Version -> Save & Run All
+    4. When it finishes, click the omni-urdu-ft.zip link under the output (or ask Claude to fetch
        the saved version's output with the Kaggle API if the browser download keeps failing)
 To change how much data/training is used, edit the SETTINGS block below.
 """
@@ -76,7 +83,11 @@ EXPORT_DIR = WORK_DIR / "omni-urdu-ft"
 # Audio goes to /tmp on Kaggle so the gigabytes of clips never end up in the notebook's output.
 DATA_DIR = (Path("/tmp") if WORK_DIR.as_posix() == "/kaggle/working" else WORK_DIR) / "urdu_speech_subset"
 SYNTH_DIR = DATA_DIR.parent / "synthetic_medical"
-TTS_MODEL = "facebook/mms-tts-urd-script_arabic"  # Meta MMS Urdu voice, CC-BY-NC-4.0
+MED_SPEECH_DIR = DATA_DIR.parent / "english_medical_speech"
+FULL_MODEL_DIR = WORK_DIR / "omni-urdu-ft-hf"  # full-precision model, input for the next round
+INPUT_DIR = Path("/kaggle/input")
+# Meta MMS voices (CC-BY-NC-4.0): Urdu reads Urdu-script sentences, English reads English ones.
+TTS_MODELS = {"urd": "facebook/mms-tts-urd-script_arabic", "eng": "facebook/mms-tts-eng"}
 SENTENCES_URL = "https://raw.githubusercontent.com/danyala014-ops/urdu-medical-asr/main/medical_sentences.py"
 
 # Share of training clips per subset. Code-switched speech teaches English words in English letters;
@@ -96,13 +107,17 @@ HEALTH_WORDS = re.compile(
 
 # ============================== SETTINGS (edit here if needed) ==============================
 TRAIN_CLIPS = 8000       # real UrduSpeech clips for training (~12 h of audio, downloaded to /tmp)
-SYNTH_TRAIN = 2500       # synthetic medical sentences for training (~20% of all training clips)
-SYNTH_TEST = 150         # unseen synthetic medical sentences, only for measuring medical terms
+SYNTH_URDU = 5000        # synthetic Urdu doctor-patient sentences (Urdu voice) for training
+SYNTH_ENGLISH = 1500     # synthetic English medical sentences (English voice) for training
+SYNTH_TEST = 150         # unseen synthetic medical sentences (trained terms), only for measuring
+UNSEEN_TEST = 100        # sentences built around 28 held-out terms never used in training
+MED_SPEECH_TRAIN = 2000  # real English medical speech clips (needs the Kaggle input dataset)
+MED_SPEECH_TEST = 150    # ... and held-out clips from its validation/test folders
 VAL_CLIPS = 100          # hand-corrected benchmark clips used to measure the result
 EPOCHS = 4
 AUGMENT = True           # random speed (0.9-1.1x) and background noise on training audio
-BATCH_SIZE = 4           # halved automatically if the GPU runs out of memory
-GRAD_ACCUM = 4           # BATCH_SIZE x GRAD_ACCUM = clips per training step (kept at 16)
+BATCH_SIZE = 2           # 4 ran out of T4 memory with 20 s clips; halved again automatically if needed
+GRAD_ACCUM = 8           # BATCH_SIZE x GRAD_ACCUM = clips per training step (kept at 16)
 LEARNING_RATE = 5e-5
 CHECK_AGAINST_OFFICIAL_MODEL = True   # compare with Meta's official model before training
 # ============================================================================================
@@ -298,48 +313,111 @@ def load_sentence_module():
 
 
 @torch.no_grad()
-def synthesize_medical(vocab, n_train, n_test):
-    """Voice synthetic doctor-patient sentences with the MMS Urdu TTS (varied speed/pitch/style).
+def synthesize_medical(vocab):
+    """Voice synthetic doctor-patient sentences with the MMS Urdu and English voices.
 
-    The voice reads the Urdu-script version of each sentence; the label keeps English terms in
-    English letters. Returns (train_rows, test_rows); test sentences never appear in training.
+    The Urdu voice reads the Urdu-script version of each sentence; the label keeps English terms
+    in English letters. Speed, voice style and pitch vary per sentence. Returns (train_rows,
+    seen_test_rows, unseen_test_rows); test sentences never appear in training, and the unseen
+    test is built around held-out terms that no training sentence contains.
     """
     from transformers import AutoTokenizer, VitsModel
 
     sentences = load_sentence_module()
-    train = sentences.generate(n_train, seed=1)
-    test = sentences.generate(n_test, seed=2, exclude={s["label"] for s in train})
+    train = sentences.generate(SYNTH_URDU, seed=1) + sentences.generate(SYNTH_ENGLISH, seed=11, voice="eng")
+    labels = {x["label"] for x in train}
+    seen = sentences.generate(SYNTH_TEST, seed=2, exclude=labels)
+    unseen = (sentences.generate(UNSEEN_TEST * 7 // 10, seed=3, held_out="only", exclude=labels)
+              + sentences.generate(UNSEEN_TEST - UNSEEN_TEST * 7 // 10, seed=4, held_out="only",
+                                   voice="eng", exclude=labels))
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(TTS_MODEL)
-    tts = VitsModel.from_pretrained(TTS_MODEL).to(device).eval()
+    voices = {v: (AutoTokenizer.from_pretrained(m), VitsModel.from_pretrained(m).to(device).eval())
+              for v, m in TTS_MODELS.items()}
     SYNTH_DIR.mkdir(parents=True, exist_ok=True)
     rng = random.Random(SEED)
     torch.manual_seed(SEED)
-    print(f"Voicing {len(train)} + {len(test)} synthetic medical sentences with {TTS_MODEL} ...")
+    print(f"Voicing {len(train)} training + {len(seen)} + {len(unseen)} test sentences "
+          f"({len(sentences.all_terms())} English medical terms) ...")
 
     def voice(items, name):
         rows = []
-        for i, s in enumerate(items):
-            text = "".join(ch for ch in s["tts"] if ch not in DROP_CHARS)
+        for i, item in enumerate(items):
+            tokenizer, tts = voices[item["voice"]]
+            text = "".join(ch for ch in item["tts"] if ch not in DROP_CHARS)
             tts.speaking_rate = rng.uniform(0.85, 1.15)
             tts.noise_scale = rng.uniform(0.45, 0.8)
             wav = tts(**tokenizer(text, return_tensors="pt").to(device)).waveform[0].float().cpu().numpy()
             if tts.config.sampling_rate != SAMPLE_RATE:
                 wav = librosa.resample(wav, orig_sr=tts.config.sampling_rate, target_sr=SAMPLE_RATE)
-            if rng.random() < 0.7:  # one voice only, so vary the pitch to sound like more speakers
+            if rng.random() < 0.7:  # one speaker per voice, so vary the pitch to sound like more people
                 wav = librosa.effects.pitch_shift(wav, sr=SAMPLE_RATE, n_steps=rng.uniform(-3, 3))
             path = SYNTH_DIR / f"{name}_{i:05d}.wav"
             sf.write(path, wav.astype(np.float32), SAMPLE_RATE)
-            rows.append({"audio_path": str(path), "text": vocab.normalize(s["label"]), "terms": s["terms"],
-                         "seconds": len(wav) / SAMPLE_RATE, "subset": "synthetic-medical"})
-            if (i + 1) % 500 == 0:
+            rows.append({"audio_path": str(path), "text": vocab.normalize(item["label"]), "terms": item["terms"],
+                         "seconds": len(wav) / SAMPLE_RATE, "subset": f"synthetic-{item['voice']}"})
+            if (i + 1) % 1000 == 0:
                 print(f"  {name}: {i + 1}/{len(items)}")
         return rows
 
-    train_rows, test_rows = voice(train, "train"), voice(test, "test")
-    del tts
+    out = voice(train, "train"), voice(seen, "seen"), voice(unseen, "unseen")
+    del voices
     torch.cuda.empty_cache()
-    return train_rows, test_rows
+    return out
+
+
+def load_medical_speech(vocab):
+    """Real English medical speech (many speakers) from the attached Kaggle dataset, if any.
+
+    "Medical Speech, Transcription, and Intent" (Figure Eight): ~8.5 h of people describing
+    symptoms. Clips are filtered by the dataset's own audio-quality rating and stored as 16 kHz.
+    Returns (train_rows, test_rows); test rows come from its validate/test folders.
+    """
+    import csv
+
+    csvs = list(INPUT_DIR.rglob("overview-of-recordings.csv")) if INPUT_DIR.exists() else []
+    if not csvs:
+        print("English medical speech dataset not attached (Add Input -> 'Medical Speech, "
+              "Transcription, and Intent'); continuing without it.")
+        return [], []
+    root = csvs[0].parent
+    wav_paths = {p.name: p for p in root.rglob("*.wav")}
+    train, test = [], []
+    with open(csvs[0], encoding="utf-8", errors="ignore") as f:
+        for row in csv.DictReader(f):
+            path = wav_paths.get((row.get("file_name") or "").strip())
+            text = vocab.normalize(clean_text(row.get("phrase")))
+            quality = to_float(row.get("overall_quality_of_the_audio"), 0.0)
+            if path is None or not text or quality < 3.5:
+                continue
+            (train if path.parent.name == "train" else test).append({"src": path, "text": text, "terms": []})
+    rng = random.Random(SEED)
+    rng.shuffle(train)
+    rng.shuffle(test)
+    train, test = train[:MED_SPEECH_TRAIN], test[:MED_SPEECH_TEST]
+    MED_SPEECH_DIR.mkdir(parents=True, exist_ok=True)
+
+    def convert(row):
+        dst = MED_SPEECH_DIR / (row["src"].stem + ".16k.wav")
+        wav = load_audio(row["src"])
+        sf.write(dst, wav, SAMPLE_RATE, subtype="PCM_16")
+        return {"audio_path": str(dst), "text": row["text"], "terms": [], "seconds": len(wav) / SAMPLE_RATE,
+                "subset": "english-medical"}
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        train, test = list(pool.map(convert, train)), list(pool.map(convert, test))
+    print(f"English medical speech: {len(train)} training + {len(test)} test clips")
+    return train, test
+
+
+def find_previous_model():
+    """A full fine-tuned model attached as input (omni-urdu-ft-hf from an earlier round), if any."""
+    if not INPUT_DIR.exists():
+        return None
+    for config in INPUT_DIR.rglob("config.json"):
+        folder = config.parent
+        if (folder / "model.safetensors").exists() and '"wav2vec2"' in config.read_text(encoding="utf-8"):
+            return folder
+    return None
 
 
 def load_audio(path):
@@ -497,7 +575,8 @@ def medical_report(model, feature_extractor, vocab, rows):
         for term in r["terms"]:
             total += 1
             found += bool(re.search(rf"(?<![a-z]){re.escape(vocab.normalize(term))}(?![a-z])", h))
-    return {"wer": wer, "cer": cer, "terms": found / max(total, 1), "example": (rows[0]["text"], hyps[0])}
+    return {"wer": wer, "cer": cer, "terms": found / total if total else None,
+            "example": (rows[0]["text"], hyps[0])}
 
 
 def check_against_reference(model, feature_extractor, vocab, rows):
@@ -603,7 +682,7 @@ def make_trainer(model, train_rows, val_rows, med_rows, feature_extractor, vocab
         greater_is_better=False,
         # No gradient checkpointing: with Wav2Vec2 on recent transformers/torch it fails in backward
         # ("different number of tensors saved during forward and recomputation"). A 300M model on
-        # <=10 s clips fits a 16 GB T4 without it.
+        # <=20 s clips fits a 16 GB T4 without it at batch 2.
         gradient_checkpointing=False,
         fp16=torch.cuda.is_available(),
         report_to=[],
@@ -622,7 +701,7 @@ def make_trainer(model, train_rows, val_rows, med_rows, feature_extractor, vocab
         model=model,
         args=TrainingArguments(**arg_kwargs),
         train_dataset=SpeechDataset(train_rows, augment=True),
-        eval_dataset={"real": SpeechDataset(val_rows), "medical": SpeechDataset(med_rows)},
+        eval_dataset={"real": SpeechDataset(val_rows), "medical": SpeechDataset(med_rows[:150])},
         data_collator=CTCCollator(feature_extractor, vocab),
         compute_metrics=make_compute_metrics(vocab),
         preprocess_logits_for_metrics=argmax_logits,
@@ -632,11 +711,13 @@ def make_trainer(model, train_rows, val_rows, med_rows, feature_extractor, vocab
 def train_with_memory_fallback(model, train_rows, val_rows, med_rows, feature_extractor, vocab):
     """Train; if the GPU runs out of memory, halve the batch (same clips per step) and retry."""
     batch_size, grad_accum = BATCH_SIZE, GRAD_ACCUM
+    before = None
     while True:
         trainer = make_trainer(model, train_rows, val_rows, med_rows, feature_extractor, vocab,
                                batch_size, grad_accum)
         try:
-            before = trainer.evaluate(trainer.eval_dataset["real"], metric_key_prefix="eval_real")
+            if before is None:  # measure the untouched model once; a retry starts from trained weights
+                before = trainer.evaluate(trainer.eval_dataset["real"], metric_key_prefix="eval_real")
             trainer.train()
             return trainer, before
         except torch.cuda.OutOfMemoryError:
@@ -652,7 +733,7 @@ def train_with_memory_fallback(model, train_rows, val_rows, med_rows, feature_ex
 
 def main():
     load_hf_token()
-    for d in (CKPT_DIR, EXPORT_DIR, DATA_DIR, SYNTH_DIR):
+    for d in (CKPT_DIR, EXPORT_DIR, DATA_DIR, SYNTH_DIR, MED_SPEECH_DIR):
         d.mkdir(parents=True, exist_ok=True)
     print(f"CUDA available: {torch.cuda.is_available()}"
           + (f" ({torch.cuda.get_device_name(0)})" if torch.cuda.is_available() else ""))
@@ -660,20 +741,25 @@ def main():
         print("WARNING: no GPU. In Kaggle: Settings -> Accelerator -> GPU T4, then run again.")
 
     local_vocab = Path(MODEL_ID) / "vocab.json"
-    vocab = CharVocab(local_vocab if local_vocab.exists() else hf_hub_download(MODEL_ID, "vocab.json"))
+    vocab_path = local_vocab if local_vocab.exists() else hf_hub_download(MODEL_ID, "vocab.json")
+    vocab = CharVocab(vocab_path)
     train_rows, val_rows = build_splits(TRAIN_CLIPS, VAL_CLIPS, vocab)
     train_rows, val_rows = filter_readable(train_rows), filter_readable(val_rows)
-    synth_train, med_rows = synthesize_medical(vocab, SYNTH_TRAIN, SYNTH_TEST)
-    train_rows = train_rows + synth_train
+    synth_train, seen_rows, unseen_rows = synthesize_medical(vocab)
+    speech_train, speech_test = load_medical_speech(vocab)
+    train_rows = train_rows + synth_train + speech_train
     random.Random(SEED).shuffle(train_rows)
-    print(f"Training clips: {len(train_rows)} ({len(synth_train)} synthetic medical); "
-          f"validation: {len(val_rows)} real + {len(med_rows)} synthetic medical")
+    print(f"Training clips: {len(train_rows)} ({len(synth_train)} synthetic medical, "
+          f"{len(speech_train)} real English medical); validation: {len(val_rows)} real")
     if not train_rows or not val_rows:
         raise RuntimeError("Training set or validation set is empty after filtering.")
 
+    previous = find_previous_model()
+    start_from = str(previous) if previous else MODEL_ID
+    print(f"Starting from: {start_from}" + ("  (continuing an earlier fine-tune)" if previous else ""))
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_ID)
     model = Wav2Vec2ForCTC.from_pretrained(
-        MODEL_ID,
+        start_from,
         ctc_loss_reduction="mean",
         ctc_zero_infinity=True,      # skip impossible (too-long label) clips instead of NaN loss
         pad_token_id=BLANK_ID,       # HF uses pad_token_id as the CTC blank
@@ -688,29 +774,42 @@ def main():
     if torch.cuda.is_available():
         model.cuda()
     model.eval()
-    if CHECK_AGAINST_OFFICIAL_MODEL:
+    if CHECK_AGAINST_OFFICIAL_MODEL and not previous:
         check_against_reference(model, feature_extractor, vocab, val_rows[:5])
-    med_before = medical_report(model, feature_extractor, vocab, med_rows)
+    tests = {"Synthetic medical sentences (trained terms)": seen_rows,
+             "Synthetic medical sentences (28 terms never trained on)": unseen_rows,
+             "Real English medical speech (many speakers)": speech_test}
+    tests = {k: v for k, v in tests.items() if v}
+    med_before = {k: medical_report(model, feature_extractor, vocab, v) for k, v in tests.items()}
 
-    trainer, before = train_with_memory_fallback(model, train_rows, val_rows, med_rows, feature_extractor, vocab)
+    trainer, before = train_with_memory_fallback(model, train_rows, val_rows, seen_rows, feature_extractor, vocab)
     after = trainer.evaluate(trainer.eval_dataset["real"], metric_key_prefix="eval_real")
     trainer.model.eval()
-    med_after = medical_report(trainer.model, feature_extractor, vocab, med_rows)
+    med_after = {k: medical_report(trainer.model, feature_extractor, vocab, v) for k, v in tests.items()}
 
-    print("\nBenchmark clips (manually corrected), greedy CTC:")
-    for name, m in [("stock omniASR 300M", before), ("fine-tuned", after)]:
+    start_name = "previous fine-tune" if previous else "stock omniASR 300M"
+    print("\nBenchmark clips (manually corrected Urdu/English), greedy CTC:")
+    for name, m in [(start_name, before), ("fine-tuned", after)]:
         print(f"  {name:<19} WER {m['eval_real_wer']:.3f}  CER {m['eval_real_cer']:.3f}  "
               f"letters: Urdu {m['eval_real_urdu_share']:.0%} / Hindi {m['eval_real_hindi_share']:.0%} "
               f"/ English {m['eval_real_english_share']:.0%}")
-    print(f"\nUnseen synthetic medical sentences ({len(med_rows)}):")
-    for name, m in [("stock omniASR 300M", med_before), ("fine-tuned", med_after)]:
-        print(f"  {name:<19} WER {m['wer']:.3f}  CER {m['cer']:.3f}  medical terms exactly right {m['terms']:.0%}")
-    print(f"  e.g. REF: {med_after['example'][0]}\n       OUT: {med_after['example'][1]}")
+    for title, rows in tests.items():
+        print(f"\n{title} ({len(rows)}):")
+        for name, m in [(start_name, med_before[title]), ("fine-tuned", med_after[title])]:
+            terms = f"  medical terms exactly right {m['terms']:.0%}" if m["terms"] is not None else ""
+            print(f"  {name:<19} WER {m['wer']:.3f}  CER {m['cer']:.3f}{terms}")
+        print(f"  e.g. REF: {med_after[title]['example'][0]}\n       OUT: {med_after[title]['example'][1]}")
 
+    # Full-precision model first (export_onnx modifies the model): the next round continues from it.
+    trainer.model.save_pretrained(str(FULL_MODEL_DIR))
+    feature_extractor.save_pretrained(str(FULL_MODEL_DIR))
+    shutil.copy(vocab_path, FULL_MODEL_DIR / "vocab.json")
+    print(f"\nSaved full model for the next round: {FULL_MODEL_DIR}")
     export_onnx(trainer.model, vocab, val_rows)
     shutil.rmtree(CKPT_DIR, ignore_errors=True)  # checkpoints are ~3.6 GB each; the ONNX is what we keep
     shutil.rmtree(DATA_DIR, ignore_errors=True)  # audio clips are not needed any more
     shutil.rmtree(SYNTH_DIR, ignore_errors=True)
+    shutil.rmtree(MED_SPEECH_DIR, ignore_errors=True)
 
     # Kaggle's Output panel often fails to start big downloads; a zip + direct link is reliable.
     zip_path = shutil.make_archive(str(EXPORT_DIR), "zip", str(EXPORT_DIR))

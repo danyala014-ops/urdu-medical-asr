@@ -24,3 +24,6 @@ lm/
 .vscode/
 .idea/
 *.log
+
+# Own voice test recordings (private)
+tests/own_voice_medical/
